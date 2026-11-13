@@ -1,0 +1,74 @@
+# Jarvis for Shops
+
+A voice-first, multilingual counter assistant for college canteens and small food stalls
+(built for the Paytm AI track: *an AI business partner for every merchant*).
+
+**Speak → confirm → pay by UPI → kitchen cooks → counter calls the number.** No cashier needed.
+
+```
+ Counter phone (APK)        Chef phones (APK)         Owner phone (APK)
+   mic · QR · speaker        one task at a time         summary · kitchen setup
+          \                        |                        /
+           ──────────  Node backend (laptop / edge box)  ──────────
+                       orders · scheduler · SSE live events · JSON persistence
+                         |                         |                  |
+                 Sarvam cloud                Parser (local)       Paytm / mock
+              Saaras STT · Bulbul TTS   Sarvam 30B · Qwen · rules   Dynamic QR + status
+```
+
+## What it does
+- **Voice ordering in Indian languages.** One Sarvam Saaras v4 call (`translate` mode) gives English text + the detected language;
+  a menu-constrained parser turns it into a cart; replies are spoken back in the customer's language (English / Hindi / Telugu templates).
+  Prices always come from `menu.json`, never from a model.
+- **Edit before paying:** +/−/✕ on the cart, voice "remove the chai", and an *Edit order* button after the QR is shown.
+- **Payment verified server-side.** Orders reach the kitchen only after the provider confirms (mock adapter now, Paytm Dynamic QR adapter included but untested without credentials).
+- **Kitchen scheduler.** Owner sets how many chefs, their language, and the dishes each owns.
+  *By item*: oldest orders first, a chef gets the dishes they own and helps with others when free. *By order*: one chef cooks a whole order.
+  Each chef holds one task at a time, spoken only on their phone; finishing it assigns the next.
+- **Counter speaker** announces "order N is ready" in the customer's language once every item is done; board for managers, sold-out toggles, voice "order 104 ready" / "dosa ready".
+- **Owner summary** of the day (orders, revenue, top item, peak hour). Orders persist to `data/state.json`.
+
+## Layout
+| Path | What |
+|---|---|
+| `server.js`, `src/` | backend (no framework): orders, kitchen scheduler, parser providers, Sarvam + payment adapters |
+| `public/` | the web app (role picker, counter, kitchen, owner) — also bundled into the APK |
+| `apk/` | Capacitor Android wrapper (`npm run sync-web`, then Gradle) |
+| `voice-lab/` | script that round-trips phrases through Sarvam TTS → STT to check language accuracy and latency |
+| `test/` | unit tests (`npm test`) |
+
+## Run
+```bash
+npm install
+cp .env.example .env        # add SARVAM_API_KEY (and LLAMA_URL if you run a local model)
+npm start                   # http://localhost:3000
+```
+No key? Typed input + the rules parser + the browser's own voice still work. Change the code → restart the server.
+
+### Local parser (Sarvam 30B, open weights, Apache-2.0)
+```bash
+huggingface-cli download sarvamai/sarvam-30b-gguf --local-dir sarvam-30b-gguf     # Q4_K_M, ~19.6 GB, no login needed
+llama-server -m sarvam-30b-gguf/sarvam-30b-Q4_K_M.gguf-00001-of-00006.gguf --alias sarvam-30b -ngl 99 -c 8192 --jinja \
+  --host <ip> --port 18080 --api-key <secret>
+```
+Set `LLAMA_URL` / `LLAMA_KEY`. The server uses the raw `/completion` endpoint with an empty think block (the chat endpoint always "thinks").
+On 8 typed Hindi/Telugu/English/Hinglish orders both Sarvam 30B and Qwen 3.8 27B scored 8/8; Sarvam answered in ~0.1–0.2 s vs ~0.5 s.
+Real noisy speech has not been benchmarked yet.
+
+### Android app
+Needs JDK 17+ and the Android SDK (platform 35).
+```bash
+cd apk && npm install && npm run sync-web
+echo "sdk.dir=$HOME/Android/Sdk" > android/local.properties
+cd android && ./gradlew assembleDebug        # app/build/outputs/apk/debug/app-debug.apk
+```
+On first launch enter the backend URL (e.g. `http://192.168.1.10:3000`) under **⚙ server**. Pick a role (Counter / Kitchen / Owner).
+Use the laptop's current Wi-Fi address, or Tailscale so it never changes.
+
+### Tests
+```bash
+npm test        # order flow, FIFO/partial readiness, scheduler, voice phrase parsing (uses a temp data dir)
+```
+
+## Status / not done
+Paytm credentials (adapter written, untested) · face check at pickup · spoken reviews · WhatsApp ordering · daily summary in Hindi/Telugu · batching the same dish across orders.

@@ -1,0 +1,52 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Jarvis Owner</title>
+<style>
+:root{--bg:#0b1220;--card:#141c2e;--fg:#e8eefc;--mut:#8b97b5;--acc:#2dd4bf}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:18px system-ui,sans-serif;padding:14px;max-width:640px;margin:auto}
+.top{display:flex;justify-content:space-between;align-items:center}h1{margin:0}.mut{color:var(--mut);font-size:15px}
+.cards{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:14px 0}.c{background:var(--card);border-radius:16px;padding:16px}.c b{font-size:30px;display:block}
+button{font:inherit;border:0;border-radius:12px;padding:12px 16px;background:var(--acc);color:#04201c;font-weight:700;cursor:pointer}button.ghost{background:#26314d;color:var(--fg);padding:6px 10px;font-size:13px}
+h2{margin:26px 0 6px}.crow{background:var(--card);border-radius:14px;padding:12px;margin:10px 0}.crow input,.crow select,#mode{font:inherit;background:#0e1626;color:var(--fg);border:1px solid #26314d;border-radius:10px;padding:8px}
+.crow .r1{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.crow input{flex:1;min-width:120px}.sk{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.sk span{background:#1d2740;padding:5px 10px;border-radius:999px;font-size:14px;cursor:pointer}.sk span.on{background:var(--acc);color:#04201c;font-weight:700}
+#txt{background:var(--card);border-radius:16px;padding:16px;line-height:1.5}
+</style></head><body>
+<div class="top"><h1>📊 Today</h1><div><button class="ghost" id="role">↩ role</button> <button class="ghost" id="srv">⚙ server</button></div></div>
+<div class="cards"><div class="c"><span class="mut">Orders</span><b id="n">–</b></div><div class="c"><span class="mut">Revenue</span><b id="rev">–</b></div>
+<div class="c"><span class="mut">Top item</span><b id="top" style="font-size:20px">–</b></div><div class="c"><span class="mut">Busiest hour</span><b id="peak">–</b></div></div>
+<div id="txt" class="mut">Loading…</div><p><button id="play">🔊 Read it to me</button></p>
+<h2>👨‍🍳 Kitchen setup</h2>
+<p class="mut">Each chef gets one task at a time on their own phone, spoken to them. Finishing a task gives them the next one.</p>
+<p><label class="mut">How work is split&nbsp;</label><select id="mode"><option value="station">By item — chefs own dishes, help others when free</option><option value="order">By order — one chef cooks a whole order</option></select></p>
+<div id="chefs"></div>
+<p><button class="ghost" id="addChef">＋ Add chef</button> <button id="saveK">Save kitchen</button> <span class="mut" id="ksave"></span></p>
+<script type="module">
+import { say, get, post, setServer, events, goRole } from "/common.js";
+setServer(false);
+const $ = (id) => document.getElementById(id); let last = null;
+async function load() {
+  try { const r = await get("/api/summary"); last = r; $("n").textContent = r.stats.orders; $("rev").textContent = "₹" + r.stats.revenue;
+    $("top").textContent = r.stats.top[0] ? `${r.stats.top[0][0]} (${r.stats.top[0][1]})` : "–"; $("peak").textContent = r.stats.peakHour != null ? r.stats.peakHour + ":00" : "–"; $("txt").textContent = r.text;
+  } catch { $("txt").textContent = "Can't reach server — tap ⚙ server"; }
+}
+$("play").onclick = () => last && say(last.audio, last.text, "en-IN");
+$("role").onclick = goRole; $("srv").onclick = () => { setServer(true); location.reload(); };
+events((e) => { if (e.type === "update" || e.type === "order") load(); }); load();
+
+// ---- kitchen setup
+let K = { mode: "station", chefs: [] }, dishes = [];
+const LANGS = [["en-IN", "English"], ["hi-IN", "हिन्दी"], ["te-IN", "తెలుగు"]];
+function drawK() {
+  $("mode").value = K.mode;
+  $("chefs").innerHTML = K.chefs.map((c, i) => `<div class="crow"><div class="r1"><input data-i="${i}" data-f="name" value="${c.name}" placeholder="Chef name"><select data-i="${i}" data-f="lang">${LANGS.map(([v, n]) => `<option value="${v}" ${c.lang === v ? "selected" : ""}>${n}</option>`).join("")}</select><button class="ghost" data-del="${i}">✕</button></div>
+    <div class="mut" style="margin-top:8px">${K.mode === "station" ? "Dishes this chef owns (none = does anything):" : "Takes whole orders, any dish"}</div>
+    ${K.mode === "station" ? `<div class="sk">${dishes.map((d) => `<span class="${c.skills.includes(d.id) ? "on" : ""}" data-i="${i}" data-sk="${d.id}">${d.name}</span>`).join("")}</div>` : ""}</div>`).join("") || `<p class="mut">No chefs yet — add one.</p>`;
+}
+async function loadK() { try { K = await get("/api/kitchen/config"); dishes = (await get("/api/config")).menu.items; K.chefs.forEach((c) => (c.skills = c.skills || [])); drawK(); } catch {} }
+$("mode").onchange = () => { K.mode = $("mode").value; drawK(); };
+$("chefs").oninput = (e) => { const d = e.target.dataset; if (d.f) K.chefs[+d.i][d.f] = e.target.value; };
+$("chefs").onclick = (e) => { const d = e.target.closest("[data-del],[data-sk]")?.dataset; if (!d) return;
+  if (d.del != null) K.chefs.splice(+d.del, 1); else { const s = K.chefs[+d.i].skills, k = s.indexOf(d.sk); k < 0 ? s.push(d.sk) : s.splice(k, 1); } drawK(); };
+$("addChef").onclick = () => { if (K.chefs.length < 12) K.chefs.push({ name: "Chef " + (K.chefs.length + 1), lang: "en-IN", skills: [] }); drawK(); };
+$("saveK").onclick = async () => { try { const r = await post("/api/kitchen/config", { mode: K.mode, chefs: K.chefs.map(({ id, name, lang, skills }) => ({ id, name, lang, skills })) }); K = r; $("ksave").textContent = "Saved ✔ " + new Date().toLocaleTimeString(); drawK(); } catch (e) { $("ksave").textContent = "Failed: " + e.message; } };
+loadK();
+</script></body></html>

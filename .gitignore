@@ -1,0 +1,22 @@
+# secrets and local config — never commit
+.env
+*.env
+!.env.example
+local.properties
+*.keystore
+*.jks
+# runtime data (orders, kitchen setup)
+data/
+# dependencies and build output
+node_modules/
+apk/www/
+apk/android/.gradle/
+apk/android/build/
+apk/android/app/build/
+apk/android/capacitor-cordova-android-plugins/
+apk/android/app/src/main/assets/public/
+apk/android/app/src/main/assets/capacitor.*.json
+apk/*.apk
+voice-lab/out/
+*.log
+.DS_Store

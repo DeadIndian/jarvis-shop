@@ -1,0 +1,17 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Jarvis for Shops</title>
+<style>
+:root{--bg:#0b1220;--card:#141c2e;--fg:#e8eefc;--mut:#8b97b5;--acc:#2dd4bf}
+body{margin:0;background:var(--bg);color:var(--fg);font:18px system-ui,sans-serif;min-height:100vh;display:grid;place-items:center;padding:16px}
+.w{max-width:420px;width:100%}h1{margin:0 0 4px}.mut{color:var(--mut);font-size:15px}
+a{display:block;background:var(--card);color:var(--fg);text-decoration:none;border-radius:18px;padding:20px;margin:12px 0;border:2px solid transparent}
+a:active,a:hover{border-color:var(--acc)}a b{font-size:22px}
+</style></head><body><div class="w"><h1>🤖 Jarvis for Shops</h1><p class="mut">Which device is this?</p>
+<a href="counter.html" data-r="counter"><b>🎤 Counter</b><br><span class="mut">Customers speak, pay with UPI</span></a>
+<a href="kitchen.html" data-r="kitchen"><b>👨‍🍳 Kitchen</b><br><span class="mut">Live orders, mark ready, sold-out</span></a>
+<a href="owner.html" data-r="owner"><b>📊 Owner</b><br><span class="mut">Daily summary and insights</span></a></div>
+<script>
+try { const q = new URLSearchParams(location.search);
+  document.querySelectorAll("a").forEach((a) => a.addEventListener("click", () => localStorage.setItem("role", a.dataset.r)));
+  const r = localStorage.getItem("role"); if (r && !q.has("pick")) location.replace(r + ".html"); } catch {}
+</script></body></html>

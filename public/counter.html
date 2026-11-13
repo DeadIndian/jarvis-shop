@@ -1,0 +1,99 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Jarvis for Shops</title>
+<style>
+:root{--bg:#0b1220;--card:#141c2e;--fg:#e8eefc;--mut:#8b97b5;--acc:#2dd4bf;--warn:#fbbf24}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:18px system-ui,sans-serif;min-height:100vh;display:grid;grid-template-columns:1.1fr 1fr;gap:16px;padding:16px}
+@media(max-width:800px){body{grid-template-columns:1fr}}
+.card{background:var(--card);border-radius:18px;padding:20px}h1{margin:0 0 4px;font-size:26px}.mut{color:var(--mut);font-size:15px}
+#face{font-size:64px;text-align:center}#say{min-height:56px;font-size:22px;text-align:center;margin:8px 0}
+button{font:inherit;border:0;border-radius:14px;padding:16px 22px;background:var(--acc);color:#04201c;font-weight:700;cursor:pointer}
+button.ghost{background:#26314d;color:var(--fg)}#talk{width:100%;font-size:22px;padding:22px}#talk.rec{background:#f87171}
+.menu{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}.menu button{background:#1d2740;color:var(--fg);font-weight:500;text-align:left;padding:10px 12px}
+table{width:100%;border-collapse:collapse}td{padding:6px 0;border-bottom:1px solid #26314d}td:last-child{text-align:right}td.q{white-space:nowrap;text-align:center}td.q button,td button.ghost{padding:2px 10px;font-size:18px}
+#qr img{width:260px;background:#fff;border-radius:12px;display:block;margin:10px auto}.big{font-size:56px;font-weight:800;text-align:center;color:var(--acc)}
+.row{display:flex;gap:8px;margin-top:10px}input{flex:1;font:inherit;padding:12px;border-radius:12px;border:1px solid #26314d;background:#0e1626;color:var(--fg)}
+</style></head><body>
+<div class="card"><h1 id="shop">Jarvis</h1><div class="mut">Speak in any Indian language · hold the button and talk</div>
+<div style="text-align:right"><button class="ghost" id="role" style="padding:6px 10px;font-size:13px">↩ role</button> <button class="ghost" id="srv" style="padding:6px 10px;font-size:13px">⚙ server</button></div><div id="face">🤖</div><div id="say">Hi! What would you like to order?</div>
+<button id="talk">🎤 Hold to speak</button>
+<div class="row"><input id="txt" placeholder="…or type (e.g. two dosa and a chai)"><button class="ghost" id="send">Send</button></div>
+<p class="mut">Tap to add:</p><div class="menu" id="menu"></div></div>
+<div class="card"><h2 style="margin-top:0">Your order</h2><table id="cart"></table><h2 id="total" style="text-align:right"></h2>
+<div class="row"><button id="pay">Pay with UPI</button><button class="ghost" id="clear">Clear</button></div>
+<div id="qr"></div><div id="status" class="mut"></div><div id="pickup" class="mut" style="margin-top:14px;font-size:20px"></div></div>
+<script type="module">
+import { recordWav, say, post, get, setServer, base, events, goRole, speakText } from "/common.js";
+setServer(false);
+let cfg, cart = [], lang = "en-IN", orderId = null, poll = null, lines = [], total = 0;
+const $ = (id) => document.getElementById(id);
+cfg = { menu: { shop: "Jarvis", items: [] }, mock: true };
+async function loadCfg() {
+  try {
+    cfg = await get("/api/config"); $("shop").textContent = cfg.menu.shop + " · Jarvis";
+    $("menu").innerHTML = cfg.menu.items.map((i) => i.soldOut ? `<button disabled style="opacity:.4">${i.name}<br><span class="mut">Sold out</span></button>` : `<button data-t="one ${i.name}">${i.name}<br><span class="mut">₹${i.price}</span></button>`).join("");
+    $("status").textContent = "Connected · parser: " + cfg.parser;
+  } catch (e) { $("say").textContent = "Can't reach server " + (base() || location.origin) + " — tap ⚙ server and enter the right address."; }
+}
+$("menu").onclick = (e) => { const b = e.target.closest("button"); if (b) turn({ text: b.dataset.t }); };
+const money = () => { const by = Object.fromEntries(cfg.menu.items.map((i) => [i.id, i])); lines = cart.filter((c) => by[c.id]).map((c) => ({ id: c.id, name: by[c.id].name, qty: c.qty, price: by[c.id].price })); total = lines.reduce((s, l) => s + l.qty * l.price, 0); };
+function render() {
+  $("cart").innerHTML = lines.map((l) => `<tr><td>${l.name}</td><td class="q"><button class="ghost" data-act="dec" data-id="${l.id}">−</button> ${l.qty} <button class="ghost" data-act="inc" data-id="${l.id}">+</button></td><td>₹${l.qty * l.price}</td><td><button class="ghost" data-act="del" data-id="${l.id}" title="Remove">✕</button></td></tr>`).join("") || `<tr><td class="mut">Empty</td></tr>`;
+  $("total").textContent = total ? "Total ₹" + total : "";
+}
+$("cart").onclick = async (e) => {
+  const b = e.target.closest("button"); if (!b) return; const { act, id } = b.dataset;
+  if (orderId) await cancelPending(); if (orderId) return;           // can't edit while payment is already received
+  const c = cart.find((x) => x.id === id); if (!c) return;
+  if (act === "inc") c.qty = Math.min(20, c.qty + 1); else if (act === "dec") c.qty -= 1; else c.qty = 0;
+  cart = cart.filter((x) => x.qty > 0); money(); render();
+};
+async function cancelPending() {                                      // customer changes mind after the QR is shown
+  if (!orderId) return; const id = orderId; clearInterval(poll);
+  const r = await post(`/api/order/${id}/cancel`, {});
+  if (r.error) { $("status").textContent = "Payment already received for " + id; startPoll(); return; }   // too late: it was paid
+  orderId = null; $("qr").innerHTML = ""; $("status").textContent = "Order unlocked — edit and pay again.";
+}
+async function turn(payload) {
+  if (orderId) await cancelPending(); if (orderId) return;
+  $("face").textContent = "🤔";
+  const r = await post("/api/turn", { ...payload, cart, lang });
+  $("face").textContent = "🤖"; if (r.heard) $("say").innerHTML = `<span class="mut">“${r.heard}”</span><br>${r.reply}`; else $("say").textContent = r.reply;
+  if (r.timings) $("status").textContent = `stt ${r.timings.stt ?? "-"}ms · parse ${r.timings.parse ?? "-"}ms (${r.timings.via}) · tts ${r.timings.tts ?? "-"}ms`;
+  cart = r.cart || cart; lines = r.lines || lines; total = r.total ?? total; lang = r.lang || lang; render(); say(r.audio, r.reply, lang);
+  if (r.action === "checkout") checkout(); if (r.action === "clear") reset();
+}
+function reset() { cart = []; lines = []; total = 0; orderId = null; clearInterval(poll); $("qr").innerHTML = ""; $("status").textContent = ""; render(); }
+$("clear").onclick = reset;
+$("send").onclick = () => { const t = $("txt").value.trim(); if (t) { $("txt").value = ""; turn({ text: t }); } };
+$("txt").onkeydown = (e) => e.key === "Enter" && $("send").click();
+let stop; const talk = $("talk");
+const start = async (e) => { e.preventDefault(); if (stop) return; talk.classList.add("rec"); talk.textContent = "● Listening… release to send"; let res; const p = new Promise((r) => (res = r)); stop = res;
+  try { const wav = await recordWav(p); stop = null; talk.classList.remove("rec"); talk.textContent = "🎤 Hold to speak"; turn({ audio: wav }); } catch (err) { stop = null; talk.classList.remove("rec"); $("say").textContent = "Mic unavailable: " + err.message; } };
+const end = () => stop && stop();
+talk.onmousedown = talk.ontouchstart = start; talk.onmouseup = talk.onmouseleave = talk.ontouchend = end;
+$("pay").onclick = () => cart.length && checkout();
+async function checkout() {
+  if (orderId || !cart.length) return;
+  const r = await post("/api/checkout", { cart, lang }); if (r.error) { $("say").textContent = r.error; return; } orderId = r.order.id;
+  $("qr").innerHTML = `<img src="${r.qr}" alt="UPI QR"><div class="mut" style="text-align:center">Scan with Paytm / any UPI app</div>` + `<div class="row"><button class="ghost" id="edit">✏ Edit order</button>${cfg.mock ? `<button class="ghost" id="sim">Simulate payment (demo)</button>` : ""}</div>`;
+  $("status").textContent = "Waiting for payment… " + r.order.id;
+  if (cfg.mock) $("sim").onclick = () => post(`/api/order/${orderId}/mock-pay`, {});
+  $("edit").onclick = cancelPending; startPoll();
+}
+function startPoll() {
+  clearInterval(poll);
+  poll = setInterval(async () => { const s = await get(`/api/order/${orderId}`); const st = s.order?.status;
+    if (st === "cancelled") { clearInterval(poll); return; }
+    if (st && st !== "awaiting_payment") { clearInterval(poll);
+      $("qr").innerHTML = `<div class="big">#${s.order.number}</div>`; $("status").textContent = "Paid ✔ Sent to kitchen. Wait for your number.";
+      if (s.announce) say(s.announce.audio, s.announce.text, lang); setTimeout(reset, 15000); } }, 2000);
+}
+$("role").onclick = goRole;
+async function loadReady() { try { const k = await get("/api/kitchen"); const r = k.orders.filter((o) => o.status === "ready").map((o) => "#" + o.number); $("pickup").innerHTML = r.length ? `Ready for pickup: <b style="color:var(--acc)">${r.join("  ")}</b>` : ""; } catch {} }
+events((e) => { if (e.type === "menu") loadCfg(); if (e.type === "ready") speakText(e.text, e.lang); if (e.type !== "menu") loadReady(); });   // this speaker calls out finished orders
+loadReady();
+$("srv").onclick = () => { setServer(true); location.reload(); };
+$("say").title = "";
+render();
+loadCfg();
+</script></body></html>

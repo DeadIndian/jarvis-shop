@@ -1,0 +1,13 @@
+{
+  "name": "jarvis-for-shops",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.js",
+    "test": "node test/flow.test.js && node test/kitchen.test.js"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4",
+    "paytmchecksum": "^1.5.1"
+  }
+}

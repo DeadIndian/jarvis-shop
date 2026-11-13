@@ -16,10 +16,25 @@ A voice-first, multilingual counter assistant for college canteens and small foo
               Saaras STT · Bulbul TTS   Sarvam 30B · Qwen · rules   Dynamic QR + status
 ```
 
+## One engine, many shops
+`profiles/*.json` define a shop type: its catalog (units, step, stock, voice aliases), how work is fulfilled, when the customer pays, and the vocabulary.
+Switch type and edit prices/stock from **Owner → My shop** (`SHOP=kirana npm start` also works).
+| Profile | Fulfilment | Payment | Flow |
+|---|---|---|---|
+| `canteen` | kitchen (chefs, by item or order) | before | speak → pay → chefs cook → announce |
+| `restaurant` | kitchen + table number | after the meal | speak → slip to kitchen → served → bill |
+| `kirana` | pack (a picker gets the paper slip) | after packing | speak → slip to picker (ticks items, marks "not available", bill shrinks) → UPI or cash at handover |
+The copilot adapts too: food shops get "prepare tomorrow", shops with stock counts get "restock" advice from sales pace.
+
+## Many shops, one backend
+`npm run start:multi` runs **multi-shop mode**: shops sign up in the app, get a shop code, and pair counter / kitchen / owner phones with it (owner needs a PIN).
+Every shop's data, stock, kitchen and live updates are isolated; speech and model usage is metered with daily quotas per shop; `/admin.html` shows all shops.
+Measured: 200 shops on one process, ~2,800 requests/s, ~1 MB per active shop, zero cross-shop leaks (`npm run loadtest`). Details and the cost model: [docs/SCALING.md](docs/SCALING.md).
+
 ## What it does
 - **Voice ordering in Indian languages.** One Sarvam Saaras v4 call (`translate` mode) gives English text + the detected language;
   a menu-constrained parser turns it into a cart; replies are spoken back in the customer's language (English / Hindi / Telugu templates).
-  Prices always come from `menu.json`, never from a model.
+  Prices always come from the shop profile's catalog, never from a model. Quantities carry units ("half kilo rice", "2 packets maggi") and quality notes ("ripe", "Tata").
 - **Edit before paying:** +/−/✕ on the cart, voice "remove the chai", and an *Edit order* button after the QR is shown.
 - **Payment verified server-side.** Orders reach the kitchen only after the provider confirms (mock adapter now, Paytm Dynamic QR adapter included but untested without credentials).
 - **Kitchen scheduler.** Owner sets how many chefs, their language, and the dishes each owns.

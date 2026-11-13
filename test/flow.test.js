@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs"; import { tmpdir } from "node:os"; import { join } from "node:path";
 process.env.DATA_DIR = mkdtempSync(join(tmpdir(), "jarvis-test-"));       // never touch real data
-const { createOrder, markPaid, markOrderReady, markLine, allocateDish, parseKitchen, cancelOrder, deliver, setSoldOut, flush } = await import("../src/orders.js");
+const { createOrder, markPaid, markOrderReady, markLine, allocateDish, parseKitchen, cancelOrder, deliver, pinOk, setSoldOut, flush } = await import("../src/orders.js");
 const { applyToCart } = await import("../src/parser.js");
 
 const a = createOrder([{ id: "samosa", qty: 2 }], "hi-IN");                              // 101
@@ -9,7 +9,7 @@ const b = createOrder([{ id: "masala_dosa", qty: 1 }, { id: "chai", qty: 1 }]); 
 const c = createOrder([{ id: "masala_dosa", qty: 2 }]);                                  // 103
 assert.equal(a.total, 30); assert.equal(b.total, 70); assert.equal(a.lang, "hi-IN");
 assert.equal(allocateDish("masala_dosa").length, 0, "unpaid orders never match");
-markPaid(c); markPaid(b); markPaid(a); c.paidAt -= 2000; b.paidAt -= 1000;                // FIFO: c, b, a
+markPaid(c); markPaid(b); markPaid(a); c.paidAt -= 2000; c.startedAt -= 2000; b.paidAt -= 1000; b.startedAt -= 1000;                // FIFO: c, b, a
 
 // "dosa ready" (no qty): oldest paid order needing dosa gets it, only its own need
 let r = allocateDish("masala_dosa"); assert.equal(r[0].order.id, c.id); assert.equal(r[0].given, 2); assert.equal(r[0].completed, true); assert.equal(c.status, "ready");
@@ -27,7 +27,7 @@ const f = createOrder([{ id: "cold_coffee", qty: 3 }]); markPaid(f);
 assert.deepEqual(parseKitchen(`order ${f.number} ready`).numbers, [f.number]);
 assert.deepEqual(parseKitchen("two dosa and chai are ready").dishes, [{ id: "masala_dosa", qty: 2 }, { id: "chai", qty: null }]);
 assert.deepEqual(parseKitchen("5 samosa ready").dishes, [{ id: "samosa", qty: 5 }]);
-assert.equal(deliver(c.number).status, "delivered");
+assert.equal(pinOk(c.number, "0000"), false); assert.equal(pinOk(c.number, c.pin), true); assert.equal(deliver(c.number).status, "delivered");
 // cancel only while unpaid
 const g = createOrder([{ id: "chai", qty: 1 }]); assert.equal(cancelOrder(g.id).status, "cancelled"); assert.equal(cancelOrder(f.id), null);
 assert.throws(() => createOrder([{ id: "nope", qty: 1 }]));

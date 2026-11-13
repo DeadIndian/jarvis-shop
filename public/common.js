@@ -32,11 +32,18 @@ export function setServer(force) {
     if (v) localStorage.setItem("api", v.replace(/\/+$/, ""));
   }
 }
-export const get = (u) => fetch(base() + u).then((r) => r.json());
-export const post = (u, b) => fetch(base() + u, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b) }).then((r) => r.json());
-
-// Live events from the backend (new paid orders, status changes, sold-out changes). EventSource auto-reconnects.
-export function events(on) { const es = new EventSource(base() + "/api/events"); es.onmessage = (m) => { try { on(JSON.parse(m.data)); } catch {} }; return es; }
+// Multi-shop mode: each role (counter / kitchen / owner) holds its own signed token from joining with the shop code.
+// the role is per TAB (sessionStorage) so one browser can hold counter + kitchen + owner tabs of the same shop; localStorage remembers the last one for app launches
+const roleNow = () => { try { return sessionStorage.getItem("role") || localStorage.getItem("role") || ""; } catch { return ""; } };
+export const token = () => { try { return localStorage.getItem("tok_" + roleNow()) || ""; } catch { return ""; } };
+const hdr = (extra = {}) => { const t = token(); return t ? { ...extra, Authorization: "Bearer " + t } : extra; };
+async function done(r) {
+  if (r.status === 401) { try { localStorage.removeItem("tok_" + roleNow()); } catch {} if (!/(^|\/)(index\.html)?$/.test(location.pathname)) location.href = "index.html?pick"; }
+  return r.json();
+}
+export const get = (u) => fetch(base() + u, { headers: hdr() }).then(done);
+export const post = (u, b) => fetch(base() + u, { method: "POST", headers: hdr({ "Content-Type": "application/json" }), body: JSON.stringify(b) }).then(done);
+export function events(on) { const t = token(); const es = new EventSource(base() + "/api/events" + (t ? "?t=" + encodeURIComponent(t) : "")); es.onmessage = (m) => { try { on(JSON.parse(m.data)); } catch {} }; return es; }
 export async function speakText(text, lang) { try { const r = await post("/api/tts", { text, lang }); say(r.audio, text, lang); } catch { say(null, text, lang); } }
 export function beep() { try { const a = new AudioContext(), o = a.createOscillator(), g = a.createGain(); o.connect(g); g.connect(a.destination); o.frequency.value = 880; g.gain.value = 0.2; o.start(); o.stop(a.currentTime + 0.25); } catch {} }
-export const goRole = () => { try { localStorage.removeItem("role"); } catch {} location.href = "index.html"; };
+export const goRole = () => { try { localStorage.removeItem("role"); sessionStorage.removeItem("role"); } catch {} location.href = "index.html"; };

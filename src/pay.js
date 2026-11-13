@@ -1,5 +1,8 @@
 // Payment adapter. "mock" works offline; "paytm" uses Dynamic QR (needs enterprise access + MID/key).
 import QRCode from "qrcode";
+// SVG, not PNG: ~50x cheaper to produce, so QR generation never dominates the server CPU when many shops check out at once
+const qrImage = async (text) => "data:image/svg+xml;base64," + Buffer.from(await QRCode.toString(text, { type: "svg", margin: 2, errorCorrectionLevel: "M" })).toString("base64");
+import { menu } from "./orders.js";
 const mode = () => (process.env.PAYMENT_MODE || "mock");
 
 export async function createQr(order) {
@@ -17,9 +20,9 @@ export async function createQr(order) {
     const j = await r.json();
     const qrData = j?.body?.qrData;
     if (!qrData) throw new Error("Paytm QR create failed: " + JSON.stringify(j?.body?.resultInfo || j));
-    return QRCode.toDataURL(qrData, { margin: 4, width: 360 });
+    return qrImage(qrData);
   }
-  return QRCode.toDataURL(`upi://pay?pa=demo@paytm&pn=Campus%20Bites&am=${order.total.toFixed(2)}&cu=INR&tn=${order.id}`, { margin: 4, width: 360 });
+  return qrImage(`upi://pay?pa=demo@paytm&pn=${encodeURIComponent(menu.shop)}&am=${order.total.toFixed(2)}&cu=INR&tn=${order.id}`);
 }
 
 // Returns true only when the provider confirms a terminal SUCCESS. Never trust the client.

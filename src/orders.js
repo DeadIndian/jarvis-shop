@@ -1,56 +1,119 @@
 // Order state machine + FIFO pickup matching, persisted to data/state.json (atomic write).
-import { readFileSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { join } from "node:path";
-export const menu = JSON.parse(readFileSync(new URL("../menu.json", import.meta.url)));
-const byId = Object.fromEntries(menu.items.map((i) => [i.id, i]));
-const DATA = process.env.DATA_DIR || fileURLToPath(new URL("../data/", import.meta.url));
-const FILE = join(DATA, "state.json");
+import { readFileSync, readdirSync } from "node:fs";
+const PROFILE_DIR = new URL("../profiles/", import.meta.url);
+export const profiles = Object.fromEntries(readdirSync(PROFILE_DIR).filter((f) => f.endsWith(".json")).map((f) => { const p = JSON.parse(readFileSync(new URL(f, PROFILE_DIR))); return [p.id, p]; }));
+import { cur, proxyOf, setDefaultFactory } from "./tenant.js";
+import { loadState, saveState } from "./store.js";
+const r2 = (x) => Math.round(x * 100) / 100;
 
-export const orders = [];
-export const soldOut = new Set();
-export const kitchenState = { mode: "station", chefs: [] };   // chefs: {id,name,lang,skills[],online,task:{number,lineIds,since}|null}
-export const hooks = { ready: null };                           // called when an order becomes fully ready
-let seq = 100;
-try { const j = JSON.parse(readFileSync(FILE, "utf8")); orders.push(...j.orders); j.soldOut.forEach((x) => soldOut.add(x)); if (j.kitchen) Object.assign(kitchenState, j.kitchen); seq = Math.max(100, ...orders.map((o) => o.number)); } catch {}
+// ---- per-shop runtime state. Everything a shop owns lives in one object; the exports below are proxies to the CURRENT shop (see tenant.js).
+export const tenants = new Map();                            // id -> loaded shop state (idle shops are unloaded by the server)
+function activate(t, id) {                                    // the shop's active profile: catalog + fulfilment mode (kitchen | pack | instant) + payment timing (before | after) + vocabulary
+  const p = profiles[id]; for (const k of Object.keys(t.menu)) delete t.menu[k];
+  Object.assign(t.menu, structuredClone(p), { items: structuredClone(t.catalogs[id] || p.items) }); if (t.name) t.menu.shop = t.name;
+  t.byId = Object.fromEntries(t.menu.items.map((i) => [i.id, i]));
+}
+export function loadTenant(id, meta = {}) {
+  let t = tenants.get(id); if (t) { t.lastUsed = Date.now(); if (meta.plan) t.plan = meta.plan; return t; }
+  const saved = loadState(id) || {};
+  t = { id, plan: meta.plan || {}, name: meta.name || saved.name || null, orders: saved.orders || [], soldOut: new Set(saved.soldOut || []), kitchen: { mode: "station", chefs: [], ...(saved.kitchen || {}) }, menu: {}, byId: {},
+    catalogs: saved.catalog || {}, seq: 100, timer: null, hooks: { ready: null }, usage: saved.usage || {}, clients: new Set(), lastUsed: Date.now() };   // clients (live SSE) is runtime only
+  t.seq = t.orders.reduce((m, o) => Math.max(m, o.number), 100);
+  activate(t, profiles[saved.shop] ? saved.shop : profiles[meta.profile] ? meta.profile : profiles[process.env.SHOP] ? process.env.SHOP : "canteen");
+  if (t.menu.fulfil === "pack") t.kitchen.mode = "order";   // a picker takes whole slips
+  t.kitchen.chefs.forEach((c) => { c.also ||= []; if (c.helpAny == null) c.helpAny = true; });
+  tenants.set(id, t); return t;
+}
+setDefaultFactory(() => loadTenant("default"));
+export const menu = proxyOf(() => cur().menu);
+export const orders = proxyOf(() => cur().orders, []);
+export const soldOut = proxyOf(() => cur().soldOut);
+export const kitchenState = proxyOf(() => cur().kitchen);   // chefs: {id,name,lang,skills[],online,task:{number,lineIds,since}|null}
+export const hooks = proxyOf(() => cur().hooks);              // called when an order becomes fully ready
+const byId = proxyOf(() => cur().byId);
+export const itemById = (id) => cur().byId[id];
+export const isOut = (id) => soldOut.has(id) || (byId[id]?.stock != null && byId[id].stock <= 0);
 
-let timer = null;
-export function flush() { clearTimeout(timer); mkdirSync(DATA, { recursive: true }); const tmp = FILE + ".tmp"; writeFileSync(tmp, JSON.stringify({ orders, soldOut: [...soldOut], kitchen: kitchenState })); renameSync(tmp, FILE); }
-export const persist = () => { clearTimeout(timer); timer = setTimeout(flush, 150); };
+export function flushTenant(t) { clearTimeout(t.timer); saveState(t.id, { orders: t.orders, soldOut: [...t.soldOut], kitchen: t.kitchen, shop: t.menu.id, name: t.name, catalog: { ...t.catalogs, [t.menu.id]: t.menu.items }, usage: t.usage }); }
+export const flush = () => flushTenant(cur());
+export const flushAll = () => { for (const t of tenants.values()) flushTenant(t); };
+export function unloadTenant(id) { const t = tenants.get(id); if (!t) return; flushTenant(t); tenants.delete(id); }
+export const persist = () => { const t = cur(); clearTimeout(t.timer); t.timer = setTimeout(() => flushTenant(t), 150); };
 
+// Quantities are in the item's own unit (kg, litre, packet, plate...). Count items are whole numbers; weights/volumes keep 2 decimals.
+export function clampQty(m, q) { q = Number(q); if (!(q > 0)) return 0; const max = m.max || (m.step && m.step < 1 ? 50 : 20); return Math.min(max, m.step >= 1 || !m.step ? Math.max(1, Math.round(q)) : Math.max(0.05, r2(q))); }
 export function priceCart(rawItems) {
   const lines = [];
   for (const it of rawItems || []) {
-    const m = byId[it.id]; const qty = Math.max(1, Math.min(20, parseInt(it.qty) || 1));
-    if (m) lines.push({ id: m.id, name: m.name, qty, price: m.price });
+    const m = byId[it.id]; const qty = m && clampQty(m, it.qty); if (!m || !qty) continue;
+    lines.push({ id: m.id, name: m.name, qty, price: m.price, unit: m.unit, amount: Math.round(qty * m.price), ...(it.note ? { note: String(it.note).slice(0, 60) } : {}) });
   }
-  return { lines, total: lines.reduce((s, l) => s + l.qty * l.price, 0) };
+  return { lines, total: lines.reduce((s, l) => s + l.amount, 0) };
 }
-
-export function createOrder(cart, lang = "en-IN") {
+const startWork = (o, at = Date.now()) => { o.status = "cooking"; o.startedAt = at; };
+export function createOrder(cart, lang = "en-IN", table = "") {
   const { lines, total } = priceCart(cart);
   if (!lines.length) throw new Error("empty cart");
-  const gone = lines.filter((l) => soldOut.has(l.id)).map((l) => l.name);
+  const gone = lines.filter((l) => isOut(l.id)).map((l) => l.name);
   if (gone.length) throw new Error("sold out: " + gone.join(", "));
-  const o = { id: `ORD${++seq}`, number: seq, lines, total, lang, status: "awaiting_payment", createdAt: Date.now(), paidAt: null, readyAt: null, deliveredAt: null };
+  const short = lines.find((l) => byId[l.id].stock != null && l.qty > byId[l.id].stock); if (short) throw new Error(`only ${byId[short.id].stock} ${byId[short.id].unit || ""} ${short.name} left`.replace(/\s+/g, " "));
+  lines.forEach((l) => { const m = byId[l.id]; if (m.stock != null) m.stock = r2(m.stock - l.qty); });   // reserve stock for this order
+  const num = ++cur().seq;
+  const o = { id: `ORD${num}`, number: num, pin: String(1000 + Math.floor(Math.random() * 9000)), shop: menu.id, lines, total, lang, status: "awaiting_payment", createdAt: Date.now(), startedAt: null, paidAt: null, readyAt: null, deliveredAt: null, ...(table ? { table: String(table).slice(0, 8) } : {}) };
+  if (menu.payWhen === "after") startWork(o);               // restaurant / kirana: the slip goes to the team now, the customer pays at the end
   orders.push(o); persist(); return o;
 }
-export function markPaid(o) { if (o.status === "awaiting_payment") { o.status = "cooking"; o.paidAt = Date.now(); persist(); } return o; }
+// pay-first shops: payment confirmed -> work starts (or, with no kitchen, the order is simply handed over)
+export function markPaid(o) {
+  if (o.status !== "awaiting_payment") return o; o.paidAt = Date.now();
+  if (menu.fulfil === "instant") { o.status = "delivered"; o.startedAt = o.readyAt = o.deliveredAt = o.paidAt; } else startWork(o, o.paidAt);
+  persist(); return o;
+}
+// pay-after shops: the finished order is billed at the counter; paying (UPI verified, or cash) completes the hand-over
+export function settle(o, method = "upi") {
+  if (o.status !== "ready" || o.paidAt) return null; o.paidAt = Date.now(); o.method = method; o.status = "delivered"; o.deliveredAt = o.paidAt; persist(); return o;
+}
+const live = (st) => ["awaiting_payment", "cooking", "ready"].includes(st);
+export function setShop(id) {
+  if (!profiles[id]) return { error: "unknown shop type" };
+  if (id === menu.id) return { ok: true };
+  if (orders.some((o) => live(o.status))) return { error: "finish or cancel the open orders first" };
+  const t = cur(); t.catalogs[menu.id] = menu.items; activate(t, id);
+  kitchenState.chefs.forEach((c) => { c.skills = c.skills.filter((d) => byId[d]); c.also = (c.also || []).filter((d) => byId[d]); });
+  if (menu.fulfil === "pack") kitchenState.mode = "order";
+  persist(); return { ok: true };
+}
+const slug = (n) => String(n).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 24) || "item";
+export function setCatalog(list) {
+  if (!Array.isArray(list) || !list.length) return { error: "catalog is empty" };
+  const out = [], used = new Set();
+  for (const x of list.slice(0, 200)) {
+    const name = String(x.name || "").trim().slice(0, 40); if (!name) continue;
+    const old = x.id && byId[x.id]; let id = old ? old.id : slug(name); while (used.has(id) || (!old && byId[id])) id += "_"; used.add(id);
+    const unit = String(x.unit || old?.unit || "piece").slice(0, 10), step = Number(x.step) > 0 ? Number(x.step) : old?.step || 1;
+    out.push({ ...(old || {}), id, name, unit, step, price: Math.max(0, Math.round(Number(x.price) || 0)), stock: x.stock === "" || x.stock == null ? null : Math.max(0, r2(Number(x.stock) || 0)),
+      aliases: [...new Set((Array.isArray(x.aliases) ? x.aliases : String(x.aliases || "").split(",")).map((a) => String(a).trim()).filter(Boolean))].slice(0, 12) });
+  }
+  if (!out.length) return { error: "no valid items" };
+  menu.items = out; cur().byId = Object.fromEntries(out.map((i) => [i.id, i]));
+  kitchenState.chefs.forEach((c) => { c.skills = c.skills.filter((d) => byId[d]); c.also = (c.also || []).filter((d) => byId[d]); });
+  persist(); return { ok: true, items: out };
+}
 
 // ---- Kitchen readiness. Each line tracks `done` (qty ready); an order is "ready" when every line is done.
-const need = (l) => l.qty - (l.done || 0);
-const cooking = () => orders.filter((o) => o.status === "cooking").sort((a, b) => a.paidAt - b.paidAt);
+const need = (l) => r2(l.qty - (l.done || 0));
+const cooking = () => orders.filter((o) => o.status === "cooking").sort((a, b) => (a.startedAt || a.paidAt) - (b.startedAt || b.paidAt));
 export function finish(o) { if (o.status === "cooking" && o.lines.every((l) => need(l) <= 0)) { o.status = "ready"; o.readyAt = Date.now(); hooks.ready?.(o); return true; } return false; }
 // whole order ready ("order 104 ready" / Order ready button)
 export function markOrderReady(number) { const o = cooking().find((x) => x.number === number); if (!o) return null; o.lines.forEach((l) => (l.done = l.qty)); finish(o); persist(); return { order: o, completed: true }; }
 // one line of one order (tap a dish on the card); qty defaults to everything still outstanding on that line
-export function markLine(number, lineId, qty) { const o = cooking().find((x) => x.number === number); const l = o?.lines.find((x) => x.id === lineId); if (!l || need(l) <= 0) return null; l.done = (l.done || 0) + Math.min(need(l), qty > 0 ? qty : need(l)); const completed = finish(o); persist(); return { order: o, completed }; }
+export function markLine(number, lineId, qty) { const o = cooking().find((x) => x.number === number); const l = o?.lines.find((x) => x.id === lineId); if (!l || need(l) <= 0) return null; l.done = r2((l.done || 0) + Math.min(need(l), qty > 0 ? qty : need(l))); const completed = finish(o); persist(); return { order: o, completed }; }
 // "dosa ready" / "5 dosa ready": give the dish to the OLDEST paid orders that still need it, FIFO. No qty = oldest order's need only.
 export function allocateDish(dishId, qty = null) {
   const out = []; let left = qty;
   for (const o of cooking()) {
     const l = o.lines.find((x) => x.id === dishId && need(x) > 0); if (!l) continue;
-    const give = left == null ? need(l) : Math.min(need(l), left); l.done = (l.done || 0) + give;
+    const give = left == null ? need(l) : Math.min(need(l), left); l.done = r2((l.done || 0) + give);
     out.push({ order: o, completed: finish(o), dish: dishId, given: give });
     if (left == null) break; left -= give; if (left <= 0) break;
   }
@@ -69,8 +132,20 @@ export function parseKitchen(text) {
   }
   return { numbers, dishes };
 }
-export function cancelOrder(id) { const o = orders.find((x) => x.id === id); if (!o || o.status !== "awaiting_payment") return null; o.status = "cancelled"; persist(); return o; }
-export function deliver(num) { const o = orders.find((x) => x.number === num && x.status === "ready"); if (o) { o.status = "delivered"; o.deliveredAt = Date.now(); persist(); } return o || null; }
+const restock = (o) => o.lines.forEach((l) => { const m = byId[l.id]; if (m?.stock != null && !l.unavailable) m.stock = r2(m.stock + l.qty); });
+// cancel: always while unpaid; in pay-after shops also while the team is still working on it
+export function cancelOrder(id) { const o = orders.find((x) => x.id === id); if (!o || !(o.status === "awaiting_payment" || (menu.payWhen === "after" && o.status === "cooking"))) return null; o.status = "cancelled"; restock(o); persist(); return o; }
+// pay-first shops hand over against the 4-digit code the customer heard when paying (pay-after shops hand over at the counter on payment)
+export const pinOk = (num, pin) => { const o = orders.find((x) => x.number === num); return !o || menu.payWhen === "after" || !o.pin || String(pin || "").trim() === o.pin; };
+export function deliver(num) { const o = orders.find((x) => x.number === num && x.status === "ready"); if (o && (menu.payWhen !== "after" || o.paidAt)) { o.status = "delivered"; o.deliveredAt = Date.now(); persist(); return o; } return null; }
+// picker cannot find an item: drop it from the bill (only where payment comes after packing)
+export function markUnavailable(number, lineId) {
+  if (menu.payWhen !== "after") return { error: "bill already paid" };
+  const o = cooking().find((x) => x.number === number); const l = o?.lines.find((x) => x.id === lineId); if (!l || l.unavailable) return { error: "no such item" };
+  const m = byId[l.id]; if (m?.stock != null) m.stock = r2(m.stock + (l.qty - (l.done || 0)));
+  l.unavailable = true; l.done = l.qty; l.amount = 0; l.chefId = null; o.total = o.lines.reduce((s, x) => s + (x.unavailable ? 0 : x.amount ?? x.qty * x.price), 0);
+  const completed = finish(o); persist(); return { order: o, completed };
+}
 export function setSoldOut(id, v) { if (!byId[id]) return false; v ? soldOut.add(id) : soldOut.delete(id); persist(); return true; }
 export function findDish(text) {
   const t = (text || "").toLowerCase();

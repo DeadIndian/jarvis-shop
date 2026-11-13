@@ -20,3 +20,5 @@ apk/*.apk
 voice-lab/out/
 *.log
 .DS_Store
+demo-data/
+demo-kirana/

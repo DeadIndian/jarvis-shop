@@ -37,16 +37,18 @@ button.ghost{background:#26314d;color:var(--fg)}button.rec{background:var(--bad)
 
 <script type="module">
 import { recordWav, say, post, get, setServer, events, speakText, beep, goRole } from "/common.js";
+import { fmtQty, lineText } from "/units.js";
 setServer(false);
 const $ = (id) => document.getElementById(id);
 const ls = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
-let who = ls.get("kwho"), orders = [], chefs = [], mode = "station", menu = [];
+let who = ls.get("kwho"), orders = [], chefs = [], mode = "station", menu = [], fulfil = "kitchen", W = {}, payAfter = false;
+const staff = () => W.staff || "Chef", pack = () => fulfil === "pack";
 const fmt = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)); return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0"); };
 const note = (t) => ($("note").textContent = t);
 const chefName = (id) => chefs.find((c) => c.id === id)?.name;
 
 async function load() {
-  try { const k = await get("/api/kitchen"); orders = k.orders; chefs = k.chefs; mode = k.mode; menu = (await get("/api/config")).menu.items; }
+  try { const k = await get("/api/kitchen"); orders = k.orders; chefs = k.chefs; mode = k.mode; fulfil = k.fulfil || "kitchen"; W = k.words || {}; const cfg = await get("/api/config"); menu = cfg.menu.items; payAfter = cfg.profile?.payWhen === "after"; }
   catch { note("Can't reach server — tap ⚙ server"); return; }
   render();
 }
@@ -55,8 +57,9 @@ function render() {
   if (who && who !== "board" && !chefs.some((c) => c.id === who)) who = null;
   if (!who) {
     $("title").textContent = "👨‍🍳 Who is using this device?";
-    $("pick").innerHTML = chefs.map((c) => `<button data-who="${c.id}">👨‍🍳 ${c.name}<br><span class="mut">${c.skills.length ? "does: " + c.skills.map((s) => menu.find((m) => m.id === s)?.name || s).join(", ") : "any dish"}${c.online ? " · on shift" : ""}</span></button>`).join("")
-      + `<button data-who="board">📋 Board (manager view)<br><span class="mut">All orders, sold-out, assign by voice</span></button>` + (chefs.length ? "" : `<p class="mut">No chefs set up yet. Use Owner → Kitchen setup, or open the Board.</p>`);
+    document.title = "Jarvis " + (W.station || "Kitchen");
+    $("pick").innerHTML = chefs.map((c) => `<button data-who="${c.id}">👨‍🍳 ${c.name}<br><span class="mut">${c.skills.length && !pack() ? "does: " + c.skills.map((s) => menu.find((m) => m.id === s)?.name || s).join(", ") : pack() ? "packs orders" : "any dish"}${c.online ? " · on shift" : ""}</span></button>`).join("")
+      + `<button data-who="board">📋 Board (manager view)<br><span class="mut">All orders, out-of-stock, assign by voice</span></button>` + (chefs.length ? "" : `<p class="mut">No ${staff().toLowerCase()}s set up yet. Use Owner → ${W.setup || "Kitchen setup"}, or open the Board.</p>`);
     $("pick").classList.remove("hide"); return;
   }
   who === "board" ? renderBoard() : renderChef();
@@ -68,10 +71,18 @@ function renderChef() {
   $("chefView").classList.remove("hide"); $("startShift").classList.toggle("hide", me.online); $("endShift").classList.toggle("hide", !me.online);
   if (!me.online) { $("taskBox").innerHTML = `<div class="idle mut">Tap “Start shift” to receive orders. Tasks are spoken to you here.</div>`; return; }
   if (me.task) {
-    const items = me.task.items.map((i) => `${i.qty} × ${i.name}`).join("<br>");
-    $("taskBox").innerHTML = `<div class="task"><div class="mut">${mode === "order" ? "WHOLE ORDER" : "YOUR TASK"} <span data-since="${me.task.since}">${fmt(Date.now() - me.task.since)}</span></div><div class="big">${items}</div><div class="for">for order #${me.task.number}</div>
-      <div class="row"><button id="done">✅ Done</button><button class="ghost" id="repeat">🔊 Repeat</button><button class="ghost" id="talkDone">🎤 Hold: “done”</button></div></div>`;
+    const slip = pack(), items = slip ? me.task.items.map((i) => `<div class="ln ${i.done >= i.total ? "done" : ""}" style="font-size:24px;text-align:left"><span>${fmtQty(i.total, i.unit)} × ${i.name}${i.note ? `<br><b style="color:var(--warn);font-size:18px">📝 ${i.note}</b>` : ""}${i.unavailable ? " <span class='tag'>not available</span>" : ""}</span>${i.done >= i.total ? "" : `<span><button class="ghost" data-tick="${i.id}">✓ got it</button> <button class="ghost" data-na="${i.id}">✗ none</button></span>`}</div>`).join("") : me.task.items.map((i) => `${lineText({ ...i, qty: i.qty })}`).join("<br>");
+    $("taskBox").innerHTML = `<div class="task"><div class="mut">${slip ? "SLIP" : mode === "order" ? "WHOLE ORDER" : "YOUR TASK"} <span data-since="${me.task.since}">${fmt(Date.now() - me.task.since)}</span></div><div class="${slip ? "" : "big"}">${items}</div><div class="for">for order #${me.task.number}${me.task.table ? " · table " + me.task.table : ""}</div>
+      <div class="row"><button id="done">${pack() ? "✅ All packed" : "✅ Done"}</button><button class="ghost" id="repeat">🔊 Repeat</button><button class="ghost" id="xfer">⇄ Transfer</button><button class="ghost" id="talkDone">🎤 Hold: “done”</button></div><div id="xferBox"></div></div>${queuedHtml(me)}`;
     $("done").onclick = () => complete({});
+    $("taskBox").onclick = async (e) => { const d = e.target.closest("[data-tick],[data-na]")?.dataset; if (!d) return;
+      try { if (d.tick) await post("/api/ready", { number: me.task.number, lineId: d.tick }); else { const r = await post("/api/line/unavailable", { number: me.task.number, lineId: d.na }); if (r.error) note(r.error); } } catch (err) { note("Failed: " + err.message); } load(); };
+    $("xfer").onclick = () => {
+      const others = chefs.filter((c) => c.online && c.id !== me.id);
+      $("xferBox").innerHTML = `<div style="margin-top:14px" class="mut">Give this to…</div><div class="row">${others.map((c) => `<button class="ghost" data-to="${c.id}">${c.name}${c.task ? " (busy — next)" : " (free)"}</button>`).join("")}${others.length ? `<button class="ghost" data-to="any">Anyone free</button>` : `<span class="mut">No other chef is on shift</span>`}</div>`;
+      $("xferBox").onclick = async (e) => { const to = e.target.closest("[data-to]")?.dataset.to; if (!to) return;
+        try { const r = await post(`/api/chefs/${me.id}/transfer`, { to }); note(r.error ? "Couldn't transfer: " + r.error : "Passed to " + r.to + "."); } catch (err) { note("Failed: " + err.message); } load(); };
+    };
     $("repeat").onclick = () => speakText(taskText(me), me.lang);
     const t = $("talkDone"); let stop;
     const start = async (e) => { e.preventDefault(); if (stop) return; t.classList.add("rec"); let res; const p = new Promise((r) => (res = r)); stop = res;
@@ -79,10 +90,11 @@ function renderChef() {
     t.onmousedown = t.ontouchstart = start; t.onmouseup = t.onmouseleave = t.ontouchend = () => stop && stop();
   } else {
     const waiting = orders.filter((o) => o.status === "cooking").reduce((n, o) => n + o.lines.filter((l) => (l.done || 0) < l.qty && !l.chefId).length, 0);
-    $("taskBox").innerHTML = `<div class="idle"><div class="big" style="font-size:30px">✔ All clear</div><div class="mut">Waiting for the next order… ${waiting ? waiting + " item(s) queued for others" : ""}</div></div>`;
+    $("taskBox").innerHTML = `<div class="idle"><div class="big" style="font-size:30px">✔ All clear</div><div class="mut">Waiting for the next order… ${waiting ? waiting + " item(s) queued for others" : ""}</div></div>${queuedHtml(me)}`;
   }
 }
-const taskText = (me) => me.task ? (mode === "order" ? `Order ${me.task.number}: ` : "") + me.task.items.map((i) => `${i.qty} ${i.name}`).join(", ") + (mode === "order" ? "" : ` for order ${me.task.number}`) : "";
+const queuedHtml = (me) => (me.queued || []).length ? `<div class="idle" style="padding:14px"><div class="mut">Next for you (passed by a colleague)</div>${me.queued.map((q) => `<div>${q.items.map((i) => lineText(i)).join(", ")} · order #${q.number}${q.from ? ` · from ${q.from}` : ""}</div>`).join("")}</div>` : "";
+const taskText = (me) => me.task ? (mode === "order" ? `Order ${me.task.number}: ` : "") + me.task.items.map((i) => lineText(i, true)).join(", ") + (mode === "order" ? "" : ` for order ${me.task.number}`) : "";
 async function complete(body) {
   try { const r = await post(`/api/chefs/${who}/complete`, body);
     note(r.completed ? (r.orderReady ? `Order #${r.order.number} complete — announced at the counter.` : "Done. Next task coming…") : (r.heard ? `Heard “${r.heard}” — say “done” to finish.` : "Nothing to complete."));
@@ -94,13 +106,14 @@ $("endShift").onclick = async () => { await post(`/api/chefs/${who}/online`, { o
 // ---------------- board (manager): all orders, chef status, sold-out, voice by order/dish
 function renderBoard() {
   $("title").textContent = "📋 Board"; $("boardView").classList.remove("hide");
-  $("chefStrip").innerHTML = chefs.map((c) => `<div class="cf"><b>${c.name}</b> <span class="${c.online ? "on" : "off"}">${c.online ? "● on shift" : "○ off"}</span><br>${c.task ? `${c.task.items.map((i) => `${i.qty}× ${i.name}`).join(", ")} → #${c.task.number} <button class="ghost sm" data-free="${c.id}">free</button>` : `<span class="mut">idle</span>`}</div>`).join("") || `<div class="mut">No chefs configured (Owner → Kitchen setup).</div>`;
-  $("chips").innerHTML = menu.map((i) => `<span class="chip ${i.soldOut ? "offc" : ""}" data-so="${i.id}" data-v="${i.soldOut ? 0 : 1}">${i.name}${i.soldOut ? " · sold out" : ""}</span>`).join("");
+  $("chefStrip").innerHTML = chefs.map((c) => `<div class="cf"><b>${c.name}</b> <span class="${c.online ? "on" : "off"}">${c.online ? "● on shift" : "○ off"}</span><br>${c.task ? `${c.task.items.map((i) => lineText(i)).join(", ")} → #${c.task.number} <button class="ghost sm" data-free="${c.id}">free</button>` : `<span class="mut">idle</span>`}${(c.queued || []).length ? `<br><span class="mut">next: ${c.queued.map((q) => "#" + q.number).join(", ")}</span>` : ""}</div>`).join("") || `<div class="mut">Nobody configured (Owner → ${W.setup || "Kitchen setup"}).</div>`;
+  $("chips").innerHTML = menu.map((i) => `<span class="chip ${i.soldOut ? "offc" : ""}" data-so="${i.id}" data-v="${i.soldOut ? 0 : 1}">${i.name}${i.soldOut ? " · out" : ""}</span>`).join("");
+  $("title").textContent = "📋 " + (W.station || "Kitchen") + " board";
   const first = orders.find((o) => o.status === "cooking");
-  $("list").innerHTML = orders.map((o) => `<div class="o ${o.status} ${o === first ? "first" : ""}"><span class="t ${o.status === "cooking" && Date.now() - o.paidAt > 600000 ? "late" : ""}" data-since="${o.paidAt}">${fmt(Date.now() - o.paidAt)}</span><b>#${o.number}</b>
-    ${o.lines.map((l) => { const done = (l.done || 0) >= l.qty; return `<div class="ln ${done ? "done" : ""}"><span>${l.done || 0}/${l.qty} × ${l.name}${l.chefId ? `<span class="tag">${chefName(l.chefId) || ""}</span>` : ""}</span>${o.status === "cooking" && !done ? `<button class="ghost" data-line="${o.number}|${l.id}">✓</button>` : ""}</div>`; }).join("")}
+  $("list").innerHTML = orders.map((o) => `<div class="o ${o.status} ${o === first ? "first" : ""}"><span class="t ${o.status === "cooking" && Date.now() - (o.startedAt || o.paidAt) > 600000 ? "late" : ""}" data-since="${o.startedAt || o.paidAt}">${fmt(Date.now() - (o.startedAt || o.paidAt))}</span><b>#${o.number}</b>${o.table ? ` <span class="tag">table ${o.table}</span>` : ""}
+    ${o.lines.map((l) => { const done = (l.done || 0) >= l.qty; return `<div class="ln ${done ? "done" : ""}"><span>${fmtQty(l.done || 0, l.unit)}/${fmtQty(l.qty, l.unit)} × ${l.name}${l.note ? ` <b title="note">📝${l.note}</b>` : ""}${l.chefId ? `<span class="tag">${chefName(l.chefId) || ""}</span>` : ""}</span>${o.status === "cooking" && !done ? `<button class="ghost" data-line="${o.number}|${l.id}">✓</button>` : ""}</div>`; }).join("")}
     <div class="mut">${o === first ? "← oldest" : o.status}</div>
-    ${o.status === "cooking" ? `<p><button data-ready="${o.number}">Order ready</button></p>` : `<p><button class="ghost" data-deliver="${o.number}">Picked up ✔</button></p>`}</div>`).join("") || `<p class="mut">No active orders.</p>`;
+    ${o.status === "cooking" ? `<p><button data-ready="${o.number}">Order ready</button></p>` : `<p>${payAfter && !o.paidAt ? `<span class="mut">₹${o.total} · pay at counter</span> <button class="ghost" data-cash="${o.id}">💵 Cash received</button>` : `<button class="ghost" data-deliver="${o.number}">Picked up ✔</button>`}</p>`}</div>`).join("") || `<p class="mut">No active orders.</p>`;
 }
 async function send(body) {
   try { const r = await post("/api/ready", body);
@@ -113,7 +126,9 @@ $("boardView").onclick = async (e) => {
   const el = e.target.closest("button, [data-so]"); if (!el) return; const d = el.dataset;
   if (d.line) { const [n, id] = d.line.split("|"); send({ number: +n, lineId: id }); }
   else if (d.ready) send({ number: +d.ready });
-  else if (d.deliver) { await post("/api/deliver", { number: +d.deliver }); load(); }
+  else if (d.cash) { await post(`/api/order/${d.cash}/cash`, {}); load(); }
+  else if (d.deliver) { const pin = prompt("Customer's 4-digit pickup code for #" + d.deliver); if (pin === null) return;
+    let r = await post("/api/deliver", { number: +d.deliver, pin }); if (r.error && confirm("Wrong code. Hand over anyway?")) r = await post("/api/deliver", { number: +d.deliver, override: true }); $("heard").textContent = r.delivered ? `#${d.deliver} handed over ✔` : (r.error || "Not delivered"); load(); }
   else if (d.free) { await post(`/api/chefs/${d.free}/free`, {}); load(); }
   else if (d.so) { await post("/api/soldout", { id: d.so, soldOut: d.v === "1" }); load(); }
 };

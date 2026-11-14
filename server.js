@@ -2,6 +2,7 @@ import http from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname } from "node:path";
 import { stt, tts, sarvamEnabled } from "./src/sarvam.js";
+import { wavDuration } from "./src/audio.js";
 import { createQr, verifyPaid, isMock } from "./src/pay.js";
 import { runIn, isMulti, cur } from "./src/tenant.js";
 import { loadState } from "./src/store.js";
@@ -16,12 +17,12 @@ import { parse, applyToCart } from "./src/parser.js";
 import { say, replyLang } from "./src/phrases.js";
 
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };
-const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Content-Type", "Access-Control-Allow-Methods": "GET,POST,OPTIONS" };
+const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Content-Type, Authorization", "Access-Control-Allow-Methods": "GET,POST,OPTIONS" };
 const json = (res, code, obj) => { res.writeHead(code, { "Content-Type": "application/json", ...CORS }); res.end(JSON.stringify(obj)); };
 const body = (req) => new Promise((ok, no) => { const c = []; let n = 0; req.on("data", (d) => { n += d.length; if (n > 8e6) { no(new Error("request too large")); req.destroy(); } else c.push(d); }); req.on("end", () => ok(Buffer.concat(c))); req.on("error", no); });
 const speak = async (text, lang) => { if (!sarvamEnabled() || !allowed("tts")) return null; try { const a = await tts(text, replyLang(lang)); track("tts", text.length); return a; } catch (e) { console.warn(e.message); return null; } };
 // speech-to-text with the shop's daily quota and usage metering
-const listen = async (b64) => { if (!allowed("stt")) { const e = new Error("daily voice limit reached - please type or tap instead"); e.limited = true; throw e; } const buf = Buffer.from(b64, "base64"); track("stt"); track("sttSec", Math.round(buf.length / 32000)); return stt(buf); };
+const listen = async (b64) => { const buf = Buffer.from(b64, "base64"); const seconds = wavDuration(buf); if (!seconds) { const e = new Error("Recording was too short or invalid. Hold the microphone button a little longer and try again."); e.invalidAudio = true; throw e; } if (!allowed("stt")) { const e = new Error("daily voice limit reached - please type or tap instead"); e.limited = true; throw e; } track("stt"); track("sttSec", Math.round(seconds)); return stt(buf); };
 const KITCHEN_LANG = process.env.KITCHEN_LANG || "en-IN";
 // live updates (SSE) are scoped to ONE shop: each shop state owns its own set of connected devices
 const emitTo = (t, type, data = {}) => { const m = `data: ${JSON.stringify({ type, ...data })}\n\n`; for (const c of t.clients) c.write(m); };
@@ -45,7 +46,7 @@ async function app(req, res, url, role) {
     if (req.method === "POST" && url.pathname === "/api/turn") {
       const { text: typed, audio, cart = [], lang: hint, add: payload_add } = JSON.parse((await body(req)).toString());
       const t = {}; let text = typed || "", lang = hint || "en-IN";
-      if (audio) { const s = Date.now(); let r; try { r = await listen(audio); } catch (e) { if (!e.limited) throw e; return json(res, 200, { heard: "", reply: e.message, lang, cart, ...pricedView(cart), audio: null, action: "none", limited: true, timings: t }); } text = r.text; lang = r.lang || lang; t.stt = Date.now() - s; }
+      if (audio) { const s = Date.now(); let r; try { r = await listen(audio); } catch (e) { if (!e.limited && !e.invalidAudio) throw e; return json(res, 200, { heard: "", reply: e.invalidAudio ? say(lang).noAudio : e.message, lang, cart, ...pricedView(cart), audio: null, action: "none", limited: !!e.limited, timings: t }); } text = r.text; lang = r.lang || lang; t.stt = Date.now() - s; }
       const P = say(lang);
       const reply = async (msg, extra = {}) => { const s = Date.now(); const a = await speak(msg, lang); t.tts = Date.now() - s; return json(res, 200, { heard: text, reply: msg, lang, cart, ...pricedView(cart), audio: a, timings: t, ...extra }); };
       if (!text && !payload_add) return reply(P.unknown);
@@ -160,7 +161,7 @@ async function app(req, res, url, role) {
     if (req.method === "POST" && url.pathname === "/api/copilot") {
       const { audio, text: typed, lang: sel } = JSON.parse((await body(req)).toString()); const t = {};
       let q = typed || "", lang = OL.includes(sel) ? sel : "en-IN";
-      if (audio) { const s0 = Date.now(); const r = await listen(audio); q = r.text; if (OL.includes(r.lang)) lang = r.lang; t.stt = Date.now() - s0; }   // answer in the language the owner spoke
+      if (audio) { const s0 = Date.now(); let r = { text: "", lang: null }; try { r = await listen(audio); } catch (e) { if (!e.invalidAudio) throw e; } q = r.text; if (OL.includes(r.lang)) lang = r.lang; t.stt = Date.now() - s0; }   // answer in the language the owner spoke
       const f = facts(); const open = /should|suggest|advice|offer|why|idea|improve|चाहिए|सलाह|ऑफर|क्यों|ఆఫర్|ఎందుకు|సలహా|కొనాలి|చేయాలి/i.test(q) || q.trim().split(/\s+/).length > 7;   // open-ended: let the model reason, fixed rules only for plain fact questions
       let answer = q.trim() && !open ? answerRules(q, f, lang) : null, source = "rules";
       if (!q.trim()) answer = noHear(lang);
@@ -195,6 +196,7 @@ async function app(req, res, url, role) {
     if (url.pathname === "/api/shop-info") { const meta = isMulti() ? getShop(cur().id) : null; return json(res, 200, { name: menu.shop, code: meta?.code || null, multi: isMulti(), usage: usageView(cur()) }); }
     return json(res, 404, { error: "not found" });
   } catch (e) {
+    if (e.invalidAudio) return json(res, 400, { error: e.message });
     if (e.limited) return json(res, 429, { error: e.message });
     if (e instanceof SyntaxError) return json(res, 400, { error: "bad request" });
     console.error(e); json(res, 500, { error: e.message });
@@ -214,7 +216,7 @@ const summary = (id) => { const t = tenants.get(id), st = t || loadState(id) || 
   return { ordersToday: today.length, revenueToday: today.filter((o) => o.paidAt).reduce((s, o) => s + o.total, 0), ordersTotal: list.length, usage: (t ? t.usage : st.usage) || {}, loaded: !!t }; };
 async function gateway(req, res) {
   const url = new URL(req.url, "http://x"), p = url.pathname;
-  if (req.method === "OPTIONS") { res.writeHead(204, CORS); return res.end(); }
+  if (req.method === "OPTIONS") { res.writeHead(204, { ...CORS, ...(req.headers["access-control-request-private-network"] === "true" ? { "Access-Control-Allow-Private-Network": "true" } : {}) }); return res.end(); }
   try {
     if (p === "/api/health") return json(res, 200, { ok: true, multi: isMulti(), shopsLoaded: tenants.size });
     if (p === "/api/mode") return json(res, 200, { multi: isMulti(), types: Object.values(profiles).map((x) => ({ id: x.id, label: x.label })) });

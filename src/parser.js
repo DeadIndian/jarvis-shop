@@ -9,7 +9,7 @@ import { allowed, track } from "./usage.js";
 const MENU = () => menu.items.map((i) => `- ${i.id}: ${i.name} (unit: ${i.unit || "piece"}; also called: ${i.aliases.join(", ")})`).join("\n");
 const SYS = () => `You are a ${menu.parserRole || "shop order"} parser for "${menu.shop}". Map what the customer says to these items ONLY:
 ${MENU()}
-The customer may speak English, Hindi, Telugu, or a mix. Items may appear in their own script. "q" is the quantity in the item's OWN unit: for kg items "half kilo"=0.5, "250 grams"=0.25, "2 kilo"=2; same for litre items; for packet/piece/plate items it is a count. "note" is any quality, brand, size or preference the customer states for that item (e.g. "ripe", "Tata", "small", "less sugar"), otherwise "" (write the note in English). Apply self-corrections ("no, make it four" replaces the earlier number). Set checkout=true only if the customer says they are finished or asks for the bill/payment. Use remove for "remove/cancel one X", clear=true for "cancel everything".
+The customer may speak English, Hindi, Telugu, or a mix. Items may appear in their own script. "q" is the quantity in the item's OWN unit: for kg items "half kilo"=0.5, "250 grams"=0.25, "2 kilo"=2; same for litre items; for packet/piece/plate items it is a count. "note" is any quality, brand, size or preference the customer states for that item (e.g. "ripe", "Tata", "small", "less sugar"), otherwise "" (write the note in English). Apply self-corrections ("no, make it four" replaces the earlier number). Set checkout=true only if the customer says they are finished or asks for the bill/payment. Use remove for "remove/cancel/reduce/decrease one X"; reducing an existing item must never add it. Set clear=true for "cancel everything".
 Output ONLY one line of compact JSON: {"items":{"<id>":{"q":<number>,"note":""}},"remove":{"<id>":<number>},"checkout":false,"clear":false}
 Examples:
 ${(menu.examples || []).join("\n")}`;
@@ -26,7 +26,7 @@ const NUM = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, s
 const QTY = "(\\d+(?:\\.\\d+)?|" + Object.keys(NUM).join("|") + ")\\s*(kgs?|kilos?|kilograms?|gms?|grams?|ml|l|litres?|liters?|packets?|packs?|pieces?|plates?|dozen)?\\s*(?:of\\s+)?";
 const ADJ = "(ripe|fresh|raw|organic|small|big|large|loose|green|cold|hot|sweet|less sugar|no sugar|extra spicy)";
 const BRAND = "tata|aashirvaad|amul|fortune|saffola|nestle|britannia|parle|surf|lux|dettol";
-const ADJ_BEFORE = new RegExp("\\b(" + ADJ.slice(1, -1) + "|" + BRAND + ")\\s+$"); const BEFORE = new RegExp(QTY + "(?:" + ADJ + "\\s+)?$"), AFTER = new RegExp("^\\s*(?:[:x-]\\s*)?" + QTY), ADJ_AFTER = new RegExp("^[^,.;]{0,12}?\\b" + ADJ + "\\b");
+const ADJ_BEFORE = new RegExp("\\b(" + ADJ.slice(1, -1) + "|" + BRAND + ")\\s+$"); const BEFORE = new RegExp(QTY + "(?:" + ADJ + "\\s+)?$"), AFTER = new RegExp("^\\s*(?:(?:[:x-]|by)\\s*)?" + QTY), ADJ_AFTER = new RegExp("^[^,.;]{0,12}?\\b" + ADJ + "\\b");
 const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 function toUnit(n, u, item) {
   u = (u || "").replace(/s$/, ""); if (u === "dozen") return n * 12;
@@ -45,7 +45,7 @@ function rulesParse(text) {
     const g = b || f; let q = g ? (isNaN(+g[1]) ? NUM[g[1]] : +g[1]) : null; q = q == null ? 1 : toUnit(q, g[2], m);
     items[m.id] = Math.round(q * 100) / 100; const n = (b && b[3]) || ADJ_BEFORE.exec(t.slice(Math.max(0, s0 - 16), s0))?.[1] || ADJ_AFTER.exec(t.slice(e0, e0 + 24))?.[1]; if (n) note[m.id] = n; hits.push(m.id);
   }
-  const removing = /\b(remove|cancel|delete|take out|without)\b/.test(t) && hits.length > 0;
+  const removing = /\b(remove|cancel|delete|take out|without|reduce|decrease|subtract)\b/.test(t) && hits.length > 0;
   return { items: removing ? {} : items, notes: removing ? {} : note, remove: removing ? items : {}, checkout: !removing && /\b(pay|bill|that's all|that is all|that's it|done|bas|checkout|nothing else|total)\b/.test(t), clear: /\b(cancel (everything|all|order)|clear|reset)\b/.test(t) };
 }
 
@@ -70,6 +70,12 @@ function primary() { return process.env.PARSER || (process.env.LLAMA_URL ? "llam
 
 export async function parse(text) {
   const name = primary(); const t0 = Date.now();
+  // A single explicit decrease has an unambiguous cart meaning; handle it
+  // before a model can accidentally classify the quantity as an addition.
+  if (/^\s*(?:please\s+)?(?:reduce|decrease|subtract)\b/i.test(text) && !/\b(add|give|order|include)\b/i.test(text)) {
+    const r = rulesParse(text);
+    if (Object.keys(r.remove).length === 1) return { ...r, via: "rules(decrease)", ms: Date.now() - t0 };
+  }
   try {
     if (name === "rules") return { ...(await providers.rules(text)), via: name, ms: Date.now() - t0 };
     if (!allowed("llm")) throw new Error("daily model limit reached");

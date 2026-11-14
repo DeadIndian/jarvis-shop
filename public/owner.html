@@ -68,14 +68,14 @@ async function loadNums() {
 $("play").onclick = async () => { try { const b = await get("/api/briefing?audio=1&lang=" + lang); say(b.audio, b.text, lang); } catch {} };
 async function ask(p) {
   const id = "q" + Date.now(); $("hist").insertAdjacentHTML("afterbegin", `<div class="qa" id="${id}"><div class="q">${p.text ? esc(p.text) : "🎤 …"}</div><div class="a mut">Thinking…</div></div>`);
-  try { const r = await post("/api/copilot", { ...p, lang }); const el = $(id); el.querySelector(".q").textContent = r.heard || p.text || ""; const a = el.querySelector(".a"); a.className = "a"; a.textContent = r.answer; say(r.audio, r.answer, r.lang); }
+  try { const r = await post("/api/copilot", { ...p, lang }); const el = $(id); el.querySelector(".q").textContent = r.heard || p.text || ""; const a = el.querySelector(".a"); a.className = "a"; a.textContent = r.error || r.answer; if (!r.error) say(r.audio, r.answer, r.lang); }
   catch (e) { $(id).querySelector(".a").textContent = "Failed: " + e.message; }
 }
 $("ask").onclick = () => { const t = $("qin").value.trim(); if (t) { $("qin").value = ""; ask({ text: t }); } };
 $("qin").onkeydown = (e) => { if (e.key === "Enter") $("ask").onclick(); };
 let stop = null; const talk = $("talk");
 const down = (e) => { e.preventDefault(); if (stop) return; let rel; const p = new Promise((r) => (rel = r)); stop = rel; talk.classList.add("rec"); talk.textContent = "● Listening… release to send";
-  recordWav(p).then((wav) => { stop = null; talk.classList.remove("rec"); talk.textContent = "🎤 Hold to ask"; ask({ audio: wav }); }).catch((err) => { stop = null; talk.classList.remove("rec"); talk.textContent = "Mic unavailable: " + err.message; }); };
+  recordWav(p).then((wav) => { stop = null; talk.classList.remove("rec"); talk.textContent = "🎤 Hold to ask"; ask({ audio: wav }); }).catch((err) => { stop = null; talk.classList.remove("rec"); talk.textContent = "🎤 Hold to ask"; $("hist").insertAdjacentHTML("afterbegin", `<div class="qa"><div class="a">Mic: ${esc(err.message)}</div></div>`); }); };
 const up = () => stop && stop();
 talk.onmousedown = down; talk.ontouchstart = down; talk.onmouseup = up; talk.onmouseleave = up; talk.ontouchend = up;
 $("role").onclick = goRole; $("srv").onclick = () => { setServer(true); location.reload(); };

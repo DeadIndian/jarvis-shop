@@ -56,7 +56,9 @@ $("cart").onclick = async (e) => {
   cart = cart.filter((x) => x.qty > 0.001); money(); render();
 };
 async function cancelPending() {                                      // customer changes mind after the QR is shown
-  if (!orderId) return; if (readyOrders.some((o) => o.id === orderId)) return;   // a finished order being billed is not cancellable const id = orderId; clearInterval(poll);
+  if (!orderId) return;
+  if (readyOrders.some((o) => o.id === orderId)) return;   // a finished order being billed is not cancellable
+  const id = orderId; clearInterval(poll);
   const r = await post(`/api/order/${id}/cancel`, {});
   if (r.error) { $("status").textContent = "Payment already received for " + id; startPoll(); return; }   // too late: it was paid
   orderId = null; $("qr").innerHTML = ""; $("status").textContent = "Order unlocked — edit and pay again.";
@@ -65,6 +67,7 @@ async function turn(payload) {
   if (orderId) await cancelPending(); if (orderId) return;
   $("face").textContent = "🤔";
   const r = await post("/api/turn", { ...payload, cart, lang });
+  if (r.error) { $("face").textContent = "🤖"; $("say").textContent = r.error; return; }
   $("face").textContent = "🤖"; if (r.heard) $("say").innerHTML = `<span class="mut">“${r.heard}”</span><br>${r.reply}`; else $("say").textContent = r.reply;
   if (r.timings) $("status").textContent = `stt ${r.timings.stt ?? "-"}ms · parse ${r.timings.parse ?? "-"}ms (${r.timings.via}) · tts ${r.timings.tts ?? "-"}ms`;
   cart = r.cart || cart; lines = r.lines || lines; total = r.total ?? total; lang = r.lang || lang; render(); if (!payload.add) say(r.audio, r.reply, lang);
@@ -76,7 +79,7 @@ $("send").onclick = () => { const t = $("txt").value.trim(); if (t) { $("txt").v
 $("txt").onkeydown = (e) => e.key === "Enter" && $("send").click();
 let stop; const talk = $("talk");
 const start = async (e) => { e.preventDefault(); if (stop) return; talk.classList.add("rec"); talk.textContent = "● Listening… release to send"; let res; const p = new Promise((r) => (res = r)); stop = res;
-  try { const wav = await recordWav(p); stop = null; talk.classList.remove("rec"); talk.textContent = "🎤 Hold to speak"; turn({ audio: wav }); } catch (err) { stop = null; talk.classList.remove("rec"); $("say").textContent = "Mic unavailable: " + err.message; } };
+  try { const wav = await recordWav(p); stop = null; talk.classList.remove("rec"); talk.textContent = "🎤 Hold to speak"; turn({ audio: wav }); } catch (err) { stop = null; talk.classList.remove("rec"); $("say").textContent = "Mic: " + err.message; } };
 const end = () => stop && stop();
 talk.onmousedown = talk.ontouchstart = start; talk.onmouseup = talk.onmouseleave = talk.ontouchend = end;
 $("pay").onclick = () => cart.length && checkout();

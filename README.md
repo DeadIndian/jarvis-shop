@@ -48,7 +48,7 @@ Measured: 200 shops on one process, ~2,800 requests/s, ~1 MB per active shop, ze
 |---|---|
 | `server.js`, `src/` | backend (no framework): orders, kitchen scheduler, parser providers, Sarvam + payment adapters |
 | `public/` | the web app (role picker, counter, kitchen, owner) — also bundled into the APK |
-| `apk/` | Capacitor Android wrapper (`npm run sync-web`, then Gradle) |
+| `android/` | Native Android app (Kotlin, Jetpack Compose, Material 3) |
 | `voice-lab/` | script that round-trips phrases through Sarvam TTS → STT to check language accuracy and latency |
 | `test/` | unit tests (`npm test`) |
 
@@ -70,14 +70,18 @@ Set `LLAMA_URL` / `LLAMA_KEY`. The server uses the raw `/completion` endpoint wi
 On 8 typed Hindi/Telugu/English/Hinglish orders both Sarvam 30B and Qwen 3.8 27B scored 8/8; Sarvam answered in ~0.1–0.2 s vs ~0.5 s.
 Real noisy speech has not been benchmarked yet.
 
-### Android app
-Needs JDK 17+ and the Android SDK (platform 35).
+### Android app (native, `android/`)
+Kotlin + Jetpack Compose + Material 3. Needs JDK 21 and the Android SDK (platform 37).
 ```bash
-cd apk && npm install && npm run sync-web
-echo "sdk.dir=$HOME/Android/Sdk" > android/local.properties
-cd android && ./gradlew assembleDebug        # app/build/outputs/apk/debug/app-debug.apk
+cd android
+echo "sdk.dir=$HOME/Android/Sdk" > local.properties
+./gradlew assembleDebug        # app/build/outputs/apk/debug/app-debug.apk
+./gradlew testDebugUnitTest
 ```
-On first launch enter the backend URL (e.g. `http://192.168.1.10:3000`) under **⚙ server**. Pick a role (Counter / Kitchen / Owner).
+On first launch type the server address (or scan a QR holding the address, as `http://host:3000` or JSON `{"url":"...","code":"..."}`).
+Multi-shop servers: join with a shop code or create a shop; single-shop servers just ask for a role.
+Counter, Kitchen and Owner are all in one app: the small swap icon in the top-right corner switches between them
+(Owner asks for the PIN). Counter and Kitchen join silently with the shop code.
 Use the laptop's current Wi-Fi address, or Tailscale so it never changes.
 
 ### Tests

@@ -1,1 +1,0 @@
-{"name":"jarvis-apk","version":"0.1.0","private":true,"scripts":{"sync-web":"rm -rf www && cp -r ../public www && npx cap sync android"},"dependencies":{"@capacitor/android":"^8.6.2","@capacitor/cli":"^7.6.10","@capacitor/core":"^8.6.2"}}

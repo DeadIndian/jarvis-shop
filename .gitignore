@@ -22,3 +22,8 @@ voice-lab/out/
 .DS_Store
 demo-data/
 demo-kirana/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/*.apk

@@ -1,3 +1,0 @@
-{ "appId": "com.jarvis.shop", "appName": "Jarvis for Shops", "webDir": "www",
-  "server": { "androidScheme": "https", "cleartext": true },
-  "android": { "allowMixedContent": true } }

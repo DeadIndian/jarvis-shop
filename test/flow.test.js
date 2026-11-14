@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs"; import { tmpdir } from "node:os"; import { join } from "node:path";
 process.env.DATA_DIR = mkdtempSync(join(tmpdir(), "jarvis-test-"));       // never touch real data
 const { createOrder, markPaid, markOrderReady, markLine, allocateDish, parseKitchen, cancelOrder, deliver, pinOk, setSoldOut, flush } = await import("../src/orders.js");
-const { applyToCart } = await import("../src/parser.js");
+const { applyToCart, parse } = await import("../src/parser.js");
 
 const a = createOrder([{ id: "samosa", qty: 2 }], "hi-IN");                              // 101
 const b = createOrder([{ id: "masala_dosa", qty: 1 }, { id: "chai", qty: 1 }]);          // 102
@@ -36,4 +36,12 @@ setSoldOut("chai", true); assert.throws(() => createOrder([{ id: "chai", qty: 1 
 let cart = applyToCart([], { items: { samosa: 2, chai: 1 }, remove: {}, clear: false });
 cart = applyToCart(cart, { items: {}, remove: { samosa: 1 }, clear: false }); assert.deepEqual(cart, [{ id: "samosa", qty: 1 }, { id: "chai", qty: 1 }]);
 assert.deepEqual(applyToCart(cart, { items: {}, remove: {}, clear: true }), []);
+// An explicit decrease must subtract from the existing cart even with a model parser configured.
+process.env.PARSER = "llama";
+const less = await parse("reduce chai by one");
+assert.deepEqual(less.remove, { chai: 1 }); assert.deepEqual(less.items, {});
+assert.deepEqual(applyToCart([{ id: "chai", qty: 3 }], less), [{ id: "chai", qty: 2 }]);
+process.env.PARSER = "rules";
+const twoLess = await parse("decrease chai by 2");
+assert.deepEqual(applyToCart([{ id: "chai", qty: 3 }], twoLess), [{ id: "chai", qty: 1 }]);
 flush(); console.log("ok");

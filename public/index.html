@@ -16,6 +16,7 @@ button{font:inherit;border:0;border-radius:12px;padding:12px 16px;background:var
   <div class="err" id="err"></div>
 </div>
 <div id="made" class="card hide"><b>Your shop is ready 🎉</b><div class="mut">Give this code to your counter and kitchen phones</div><div class="code" id="mcode"></div><button id="cont">Continue</button></div>
+<div class="card"><b>Server</b><div class="mut" id="connection">Checking connection…</div><button class="ghost" id="server">⚙ Change server</button></div>
 <div id="roles"><p class="mut" id="sub">Which device is this?</p>
 <a class="t" href="counter.html" data-r="counter"><b>🎤 Counter</b><br><span class="mut">Customers speak, pay with UPI</span></a>
 <a class="t" href="kitchen.html" data-r="kitchen"><b>👨‍🍳 Kitchen</b><br><span class="mut">Live orders, mark ready, sold-out</span></a>
@@ -27,21 +28,26 @@ try { const q = new URLSearchParams(location.search);
   const r = localStorage.getItem("role"); if (r && !q.has("pick") && (localStorage.multi !== "1" || localStorage.getItem("tok_" + r))) location.replace(r + ".html"); } catch {}
 </script>
 <script type="module">
-import { get, post, setServer } from "/common.js";
+import { base, get, post, setServer } from "/common.js";
 setServer(false);
 const $ = (id) => document.getElementById(id), ls = { g: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, s: (k, v) => { try { localStorage.setItem(k, v); } catch {} }, d: (k) => { try { localStorage.removeItem(k); } catch {} } };
 const err = (t) => ($("err").textContent = t || "");
+const target = base() || location.origin;
+$("connection").textContent = "Checking " + target + "…";
+$("server").onclick = () => { if (setServer(true)) location.reload(); };
 let multi = false;
 async function join(role, code, pin) { const r = await post("/api/join", { code, role, pin }); if (r.error) throw new Error(r.error); ls.s("tok_" + role, r.token); ls.s("role", role); try { sessionStorage.setItem("role", role); } catch {} ls.s("code", code); return r; }
 function show() { const has = !!ls.g("code"); $("join").classList.toggle("hide", !(multi && !has)); $("roles").classList.toggle("hide", multi && !has); $("leaveBox").classList.toggle("hide", !(multi && has)); }
 try {
-  const m = await get("/api/mode"); multi = !!m.multi; ls.s("multi", multi ? "1" : "0");
+  const m = await get("/api/mode"); if (m.error) throw new Error(m.error);
+  $("connection").textContent = "Connected to " + target;
+  multi = !!m.multi; ls.s("multi", multi ? "1" : "0");
   if (multi) { $("ty").innerHTML = m.types.map((t) => `<option value="${t.id}">${t.label}</option>`).join(""); show(); }
   else { const c = await get("/api/config"), w = c.profile.words || {}, pk = c.profile.fulfil === "pack";
     document.querySelector("h1").textContent = "🤖 " + c.menu.shop;
     document.querySelector('[data-r="kitchen"]').innerHTML = `<b>${pk ? "🧺" : "👨‍🍳"} ${w.station || "Kitchen"}</b><br><span class="mut">${pk ? "Slips to pick, tick items, mark not available" : "Live orders, mark ready, sold-out"}</span>`;
     document.querySelector('[data-r="counter"]').innerHTML = `<b>🎤 Counter</b><br><span class="mut">${pk ? "Take the order by voice, then bill and collect" : "Customers speak, pay with UPI"}</span>`; }
-} catch {}
+} catch (e) { $("connection").textContent = "Can't reach " + target + ": " + e.message; }
 $("go").onclick = () => { const c = $("code").value.trim().toUpperCase(); if (!c) return err("Enter the shop code"); err(); ls.s("code", c); show(); };
 $("mk").onclick = async () => { err(); const r = await post("/api/shops", { name: $("nm").value, profile: $("ty").value, pin: $("pin").value }); if (r.error) return err(r.error);
   ls.s("code", r.shop.code); ls.s("tok_owner", r.token); $("join").classList.add("hide"); $("mcode").textContent = r.shop.code; $("made").classList.remove("hide"); $("roles").classList.add("hide"); };

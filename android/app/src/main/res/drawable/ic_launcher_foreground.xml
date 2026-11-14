@@ -1,0 +1,8 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <!-- bag body -->
+    <path android:fillColor="#FFFFFF" android:pathData="M32,46h44a4,4 0 0 1 4,4v28a4,4 0 0 1 -4,4H32a4,4 0 0 1 -4,-4V50a4,4 0 0 1 4,-4z"/>
+    <!-- handle -->
+    <path android:strokeColor="#FFFFFF" android:strokeWidth="5" android:strokeLineCap="round" android:pathData="M42,48C42,28 66,28 66,48"/>
+    <!-- waveform -->
+    <path android:strokeColor="#00BAF2" android:strokeWidth="4" android:strokeLineCap="round" android:pathData="M40,66v4M47,60v16M54,54v28M61,60v16M68,66v4"/>
+</vector>

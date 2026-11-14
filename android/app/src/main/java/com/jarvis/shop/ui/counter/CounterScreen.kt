@@ -129,7 +129,7 @@ fun CounterScreen(graph: AppGraph, cfg: Config) {
             }
         }
 
-        QuickAdd(cfg.menu.items.filter { !it.soldOut }, vm::add)
+        if (!s.textMode) QuickAdd(cfg.menu.items.filter { !it.soldOut }, vm::add)
         if (s.textMode) TextInput(onSend = vm::sendText)
         TotalBar(s.total, s.count, profile.payAfter)
         Dock(s, profile.payAfter, onKeyboard = vm::toggleTextMode,
@@ -137,7 +137,7 @@ fun CounterScreen(graph: AppGraph, cfg: Config) {
             onCheckout = vm::checkout, onClear = vm::clear)
     }
 
-    s.sheet?.let { sheet -> CounterSheet(sheet, cfg.mock, vm) }
+    s.sheet?.let { sheet -> CounterSheet(sheet, cfg.mock, profile.payAfter, vm) }
 }
 
 @Composable
@@ -232,7 +232,7 @@ private fun Dock(s: CounterState, payAfter: Boolean, onKeyboard: () -> Unit, onM
 
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-private fun CounterSheet(sheet: Sheet, mock: Boolean, vm: CounterViewModel) {
+private fun CounterSheet(sheet: Sheet, mock: Boolean, payAfter: Boolean, vm: CounterViewModel) {
     ModalBottomSheet(onDismissRequest = vm::closeSheet, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.fillMaxWidth().padding(horizontal = Spacing.xl).padding(bottom = Spacing.xl), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(Spacing.m)) {
             when (sheet) {
@@ -243,7 +243,7 @@ private fun CounterSheet(sheet: Sheet, mock: Boolean, vm: CounterViewModel) {
                     Text("Sent to the team. Call the number when it's ready.", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
                     JarvisButton("Done", vm::closeSheet, Modifier.fillMaxWidth())
                 }
-                is Sheet.Handover -> HandoverSheet(sheet, vm)
+                is Sheet.Handover -> HandoverSheet(sheet, payAfter, vm)
             }
         }
     }
@@ -284,8 +284,7 @@ private fun PaySheet(p: Sheet.Pay, mock: Boolean, vm: CounterViewModel) {
 }
 
 @Composable
-private fun HandoverSheet(h: Sheet.Handover, vm: CounterViewModel) {
-    val needsPay = h.order.paidAt == null && h.order.method == null
+private fun HandoverSheet(h: Sheet.Handover, payAfter: Boolean, vm: CounterViewModel) {
     Text("Order #${h.order.number} is ready", style = MaterialTheme.typography.titleLarge)
     h.order.lines.forEach { Text("${fmtQty(it.qty, it.unit)} ${it.name}", style = MaterialTheme.typography.bodyLarge) }
     if (h.error != null) BannerMessage(h.error, Tone.Error)
@@ -296,6 +295,8 @@ private fun HandoverSheet(h: Sheet.Handover, vm: CounterViewModel) {
     } else {
         var pin by remember { mutableStateOf("") }
         StatusChip("Paid", Tone.Success, icon = Icons.Filled.CheckCircle)
+        // Pay-after shops have no pickup code (the customer paid at the counter), so it's one tap.
+        if (payAfter) { JarvisButton("Handed over", { vm.deliver(null, true) }, Modifier.fillMaxWidth(), kind = ButtonKind.Success, loading = h.busy); return }
         OutlinedTextField(pin, { pin = it.filter(Char::isDigit).take(6) }, Modifier.fillMaxWidth(), label = { Text("Pickup code (from customer)") }, singleLine = true,
             shape = MaterialTheme.shapes.small, keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.NumberPassword))
         JarvisButton("Hand over", { vm.deliver(pin, false) }, Modifier.fillMaxWidth(), kind = ButtonKind.Success, enabled = pin.length >= 3, loading = h.busy)
